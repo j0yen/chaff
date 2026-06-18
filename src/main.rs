@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 
-use chaff::{survey, Strain};
+use chaff::{plan, survey, synthesize_gitignore, GitignorePlan, RepoType, Strain};
 use chaff::{check_staged, install_hook, uninstall_hook};
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -39,6 +39,25 @@ enum Commands {
     Guard {
         #[command(subcommand)]
         action: GuardAction,
+    },
+
+    /// Synthesize a .gitignore for repos that lack one and have tracked build junk.
+    Gitignore {
+        /// Root directory to walk (default: ~/wintermute).
+        #[arg(long)]
+        root: Option<PathBuf>,
+
+        /// Actually write .gitignore files (default: dry-run).
+        #[arg(long)]
+        write: bool,
+
+        /// Output format.
+        #[arg(long, value_enum, default_value = "text")]
+        format: Format,
+
+        /// Include repos with no tracked junk (in addition to junk repos).
+        #[arg(long)]
+        all: bool,
     },
 }
 
@@ -88,6 +107,73 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Gitignore { root, write, format, all } => {
+            let root = root.unwrap_or_else(default_root);
+            let results = survey(&root);
+
+            // Filter: has_gitignore==false AND (tracked_junk>0 OR --all)
+            let candidates: Vec<_> = results
+                .iter()
+                .filter(|r| !r.has_gitignore && (all || r.tracked_junk > 0))
+                .collect();
+
+            match format {
+                Format::Json => {
+                    let stdout = std::io::stdout();
+                    let mut out = stdout.lock();
+                    let plans: Vec<GitignorePlan> = plan(&results, all);
+                    for p in &plans {
+                        let line = match serde_json::to_string(p) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                eprintln!("serialization error: {e}");
+                                std::process::exit(2);
+                            }
+                        };
+                        if writeln!(out, "{}", line).is_err() {
+                            std::process::exit(0);
+                        }
+                    }
+                }
+                Format::Text => {
+                    let stdout = std::io::stdout();
+                    let mut out = stdout.lock();
+                    for repo in &candidates {
+                        let result = synthesize_gitignore(repo, write, all);
+                        let repo_type_str = match result.repo_type {
+                            RepoType::Rust => "rust",
+                            RepoType::Node => "node",
+                            RepoType::Python => "python",
+                            RepoType::Generic => "generic",
+                        };
+                        if let Some(reason) = &result.skipped_reason {
+                            if writeln!(out, "SKIP  {} [{}] — {}", repo.repo, repo_type_str, reason).is_err() {
+                                std::process::exit(0);
+                            }
+                        } else if result.written {
+                            if writeln!(out, "WRITE {} [{}]", repo.repo, repo_type_str).is_err() {
+                                std::process::exit(0);
+                            }
+                        } else {
+                            // Dry-run: print what would be written
+                            if writeln!(out, "DRY   {} [{}]", repo.repo, repo_type_str).is_err() {
+                                std::process::exit(0);
+                            }
+                            for line in result.content.lines() {
+                                if writeln!(out, "      {}", line).is_err() {
+                                    std::process::exit(0);
+                                }
+                            }
+                        }
+                    }
+                    if candidates.is_empty() {
+                        if writeln!(out, "no repos need a .gitignore (use --all to include clean repos)").is_err() {
+                            std::process::exit(0);
+                        }
+                    }
+                }
+            }
+        }
         Commands::Survey { root, format, all } => {
             let root = root.unwrap_or_else(default_root);
             let mut results = survey(&root);
