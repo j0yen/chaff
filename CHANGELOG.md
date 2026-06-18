@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.0 — 2026-06-18
+
+chaff repair: untrack build artifacts and commit deletion; dry-run default; Joe Yen identity; --no-dry-run to apply; per-repo verdicts
+
 ## v0.3.0 — 2026-06-18
 
 chaff gitignore: synthesize .gitignore for repos lacking one; detects Rust/Node/Python/Generic type; dry-run default; refuses to overwrite existing .gitignore
