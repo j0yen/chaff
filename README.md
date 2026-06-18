@@ -32,6 +32,29 @@ cargo install --path .
 install -Dm755 target/release/chaff ~/.local/bin/chaff
 ```
 
+## Scheduled hygiene
+
+Install the cron timer to run a survey + dry-run repair every 6 hours:
+
+```bash
+install -Dm755 contrib/chaff-cron.sh ~/.local/bin/chaff-cron.sh
+cp contrib/claude-chaff.service contrib/claude-chaff.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now claude-chaff.timer
+```
+
+The timer fires at 03:30 / 09:30 / 15:30 / 21:30 daily (offset from the
+`adopt-cron` / `consign-drain` / `trim-relief` timers to avoid a
+thundering herd).
+
+By default the cron pass runs `chaff repair` in **dry-run mode** — it
+reports what would be cleaned but mutates nothing. To enable autonomous
+repair:
+
+```bash
+mkdir -p ~/.config/chaff && touch ~/.config/chaff/auto-repair
+```
+
 ## License
 
 MIT — Copyright 2026 Joe Yen

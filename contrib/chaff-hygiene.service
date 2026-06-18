@@ -1,8 +1,0 @@
-[Unit]
-Description=chaff git hygiene pass
-
-[Service]
-Type=oneshot
-ExecStart=%h/.claude/scripts/chaff-cron.sh
-StandardOutput=journal
-StandardError=journal

@@ -1,0 +1,11 @@
+[Unit]
+Description=chaff hygiene timer (every 6h, offset from adopt/consign/trim)
+
+[Timer]
+OnCalendar=*-*-* 03,09,15,21:30:00
+OnBootSec=15min
+Persistent=true
+Unit=claude-chaff.service
+
+[Install]
+WantedBy=timers.target

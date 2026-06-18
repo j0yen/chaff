@@ -1,0 +1,8 @@
+[Unit]
+Description=chaff scheduled git hygiene pass
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/chaff-cron.sh
+StandardOutput=journal
+StandardError=journal
