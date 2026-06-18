@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.0 — 2026-06-18
+
+chaff-policy: default-deny gate for safe untracking — eligible path/repo check, HARD exclusions (mid-merge/diverged/active-build), config overlay at ~/.config/chaff/policy.toml
+
 ## v0.4.0 — 2026-06-18
 
 chaff repair: untrack build artifacts and commit deletion; dry-run default; Joe Yen identity; --no-dry-run to apply; per-repo verdicts
