@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use chaff::{plan, survey, synthesize_gitignore, GitignorePlan, RepoType, Strain};
 use chaff::{check_staged, install_hook, uninstall_hook};
+use chaff::repair_all;
 
 #[derive(Debug, Clone, ValueEnum)]
 enum Format {
@@ -39,6 +40,25 @@ enum Commands {
     Guard {
         #[command(subcommand)]
         action: GuardAction,
+    },
+
+    /// Untrack build artifacts from git index and commit the deletion.
+    Repair {
+        /// Root directory to walk (default: ~/wintermute).
+        #[arg(long)]
+        root: Option<PathBuf>,
+
+        /// Actually apply changes (default: dry-run).
+        #[arg(long)]
+        no_dry_run: bool,
+
+        /// Restrict to a single named repo.
+        #[arg(long)]
+        repo: Option<String>,
+
+        /// Output format.
+        #[arg(long, value_enum, default_value = "text")]
+        format: Format,
     },
 
     /// Synthesize a .gitignore for repos that lack one and have tracked build junk.
@@ -107,6 +127,77 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Repair { root, no_dry_run, repo, format } => {
+            let root = root.unwrap_or_else(default_root);
+            let dry_run = !no_dry_run;
+            let verdicts = repair_all(&root, dry_run, repo.as_deref());
+
+            let mut any_failed = false;
+            match format {
+                Format::Json => {
+                    let stdout = std::io::stdout();
+                    let mut out = stdout.lock();
+                    for v in &verdicts {
+                        if v.status == "failed" {
+                            any_failed = true;
+                        }
+                        let line = match serde_json::to_string(v) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                eprintln!("serialization error: {e}");
+                                std::process::exit(2);
+                            }
+                        };
+                        if writeln!(out, "{}", line).is_err() {
+                            std::process::exit(0);
+                        }
+                    }
+                }
+                Format::Text => {
+                    let stdout = std::io::stdout();
+                    let mut out = stdout.lock();
+                    for v in &verdicts {
+                        if v.status == "failed" {
+                            any_failed = true;
+                        }
+                        let label = match v.status.as_str() {
+                            "dry_run" => "DRY  ",
+                            "applied" => "APPLY",
+                            "skipped" => "SKIP ",
+                            "failed" => "FAIL ",
+                            _ => "?    ",
+                        };
+                        let detail = if let Some(r) = &v.reason {
+                            format!(" — {}", r)
+                        } else if v.committed {
+                            format!(
+                                " — {} files, gitignore={}, sha={}",
+                                v.files_untracked,
+                                v.gitignore_action,
+                                v.commit_sha.as_deref().unwrap_or("?")
+                            )
+                        } else {
+                            format!(
+                                " — {} files, gitignore={}",
+                                v.files_untracked, v.gitignore_action
+                            )
+                        };
+                        if writeln!(out, "{} {}{}", label, v.repo, detail).is_err() {
+                            std::process::exit(0);
+                        }
+                    }
+                    if verdicts.is_empty() {
+                        if writeln!(out, "no repos found under {}", root.display()).is_err() {
+                            std::process::exit(0);
+                        }
+                    }
+                }
+            }
+            if any_failed {
+                std::process::exit(1);
+            }
+        }
+
         Commands::Gitignore { root, write, format, all } => {
             let root = root.unwrap_or_else(default_root);
             let results = survey(&root);
