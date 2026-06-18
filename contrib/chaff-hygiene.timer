@@ -1,0 +1,10 @@
+[Unit]
+Description=chaff hygiene timer (every 6h)
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:00:00
+Persistent=true
+Unit=chaff-hygiene.service
+
+[Install]
+WantedBy=timers.target
