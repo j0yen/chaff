@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use chaff::{plan, survey, synthesize_gitignore, GitignorePlan, RepoType, Strain};
 use chaff::{check_staged, install_hook, uninstall_hook};
 use chaff::repair_all;
+use chaff::{evaluate, RepoPlan};
 
 #[derive(Debug, Clone, ValueEnum)]
 enum Format {
@@ -78,6 +79,17 @@ enum Commands {
         /// Include repos with no tracked junk (in addition to junk repos).
         #[arg(long)]
         all: bool,
+    },
+
+    /// Evaluate per-repo and per-path eligibility for untracking (default-deny gate).
+    Policy {
+        /// Root directory to walk (default: ~/wintermute).
+        #[arg(long)]
+        root: Option<PathBuf>,
+
+        /// Output format.
+        #[arg(long, value_enum, default_value = "text")]
+        format: Format,
     },
 }
 
@@ -408,5 +420,80 @@ fn main() {
                 }
             }
         },
+
+        Commands::Policy { root, format } => {
+            let root = root.unwrap_or_else(default_root);
+            let repos = survey(&root);
+            let plans: Vec<RepoPlan> = evaluate(&repos);
+
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+
+            match format {
+                Format::Json => {
+                    let json = match serde_json::to_string_pretty(&plans) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("serialization error: {e}");
+                            std::process::exit(2);
+                        }
+                    };
+                    if writeln!(out, "{}", json).is_err() {
+                        std::process::exit(0);
+                    }
+                }
+                Format::Text => {
+                    let eligible_repos: Vec<_> = plans
+                        .iter()
+                        .filter(|p| p.eligible)
+                        .collect();
+                    let excluded_repos: Vec<_> = plans
+                        .iter()
+                        .filter(|p| !p.eligible)
+                        .collect();
+
+                    let total_eligible_paths: usize = eligible_repos
+                        .iter()
+                        .flat_map(|r| r.paths.iter())
+                        .filter(|p| p.eligible)
+                        .count();
+
+                    if writeln!(
+                        out,
+                        "{} eligible repos ({} eligible paths), {} excluded repos",
+                        eligible_repos.len(),
+                        total_eligible_paths,
+                        excluded_repos.len()
+                    )
+                    .is_err()
+                    {
+                        std::process::exit(0);
+                    }
+
+                    for rp in &excluded_repos {
+                        if writeln!(out, "  EXCLUDED  {} ({})", rp.repo.display(), rp.reason).is_err() {
+                            std::process::exit(0);
+                        }
+                    }
+
+                    for rp in &eligible_repos {
+                        let ep_count = rp.paths.iter().filter(|p| p.eligible).count();
+                        let xp_count = rp.paths.iter().filter(|p| !p.eligible).count();
+                        if writeln!(
+                            out,
+                            "  eligible  {} ({} eligible, {} excluded paths)",
+                            rp.repo.display(),
+                            ep_count,
+                            xp_count
+                        )
+                        .is_err()
+                        {
+                            std::process::exit(0);
+                        }
+                    }
+                }
+            }
+            // Always exit 0 (AC8)
+        }
     }
 }
