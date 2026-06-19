@@ -82,7 +82,7 @@ fn ac1_dry_run_reports_without_mutating() {
 
     assert!(is_tracked(dir, "target/x.o"), "precondition: file must be tracked");
 
-    let verdict = repair(dir, /*dry_run=*/true).expect("repair dry-run should not error");
+    let verdict = repair(dir, /*dry_run=*/true, /*push=*/false).expect("repair dry-run should not error");
     assert_eq!(verdict.files_untracked, 1, "should report 1 file");
     assert!(!verdict.committed, "committed must be false in dry-run");
     assert_eq!(verdict.status, "dry_run");
@@ -103,7 +103,7 @@ fn ac2_apply_untracks_and_commits() {
     init_repo(dir);
     commit_file(dir, "target/x.o", "binary");
 
-    let verdict = repair(dir, /*dry_run=*/false).expect("repair should not error");
+    let verdict = repair(dir, /*dry_run=*/false, /*push=*/false).expect("repair should not error");
     assert_eq!(verdict.files_untracked, 1);
     assert!(verdict.committed, "should have committed");
     assert_eq!(verdict.status, "applied");
@@ -134,7 +134,7 @@ fn ac3_existing_gitignore_no_duplicate() {
     // Track target/.rustc_info.json (the coda case) — must force-add since .gitignore covers target/
     commit_file_force(dir, "target/.rustc_info.json", "{}", true);
 
-    let verdict = repair(dir, /*dry_run=*/false).expect("repair should not error");
+    let verdict = repair(dir, /*dry_run=*/false, /*push=*/false).expect("repair should not error");
     assert!(verdict.committed, "should have committed");
     assert_eq!(verdict.gitignore_action, "unchanged",
         "gitignore_action should be 'unchanged' since target/ already covered");
@@ -158,7 +158,7 @@ fn ac4_no_gitignore_creates_and_untracks() {
 
     assert!(!dir.join(".gitignore").exists(), "precondition: no .gitignore");
 
-    let verdict = repair(dir, /*dry_run=*/false).expect("repair should not error");
+    let verdict = repair(dir, /*dry_run=*/false, /*push=*/false).expect("repair should not error");
     assert!(verdict.committed, "should have committed");
     assert_eq!(verdict.gitignore_action, "created");
 
@@ -187,7 +187,7 @@ fn ac5_commit_author_is_joe_yen() {
     init_repo(dir);
     commit_file(dir, "target/foo.rlib", "rlib");
 
-    let verdict = repair(dir, /*dry_run=*/false).expect("repair should not error");
+    let verdict = repair(dir, /*dry_run=*/false, /*push=*/false).expect("repair should not error");
     assert!(verdict.committed, "should have committed");
 
     let author = run_git_output(dir, &["log", "-1", "--format=%an <%ae>"]);
@@ -213,7 +213,7 @@ fn ac6_detached_head_skipped() {
     let sha = run_git_output(dir, &["rev-parse", "HEAD"]);
     run_git(dir, &["checkout", "--detach", sha.trim()]);
 
-    let verdict = repair(dir, /*dry_run=*/false).expect("repair should not error");
+    let verdict = repair(dir, /*dry_run=*/false, /*push=*/false).expect("repair should not error");
     assert_eq!(verdict.status, "skipped");
     assert!(
         verdict.reason.as_deref().unwrap_or("").contains("detached"),
@@ -236,7 +236,7 @@ fn ac7_repair_specific_repo_path() {
     commit_file(dir, "target/y.o", "obj");
 
     // repair() accepts a direct path — this is the single-repo path
-    let verdict = repair(dir, /*dry_run=*/true).expect("repair should not error");
+    let verdict = repair(dir, /*dry_run=*/true, /*push=*/false).expect("repair should not error");
     assert_eq!(verdict.files_untracked, 1);
     assert!(
         verdict.path == dir,
@@ -268,7 +268,7 @@ fn ac8_failure_continues_to_next() {
     commit_file(&repo_b, "target/b.o", "obj");
 
     // Run repair_all dry-run over both
-    let verdicts = repair_all(root, /*dry_run=*/true, None);
+    let verdicts = repair_all(root, /*dry_run=*/true, None, /*push=*/false);
     assert_eq!(verdicts.len(), 2, "should have one verdict per repo");
 
     // alpha skipped (no junk), beta dry-run
@@ -278,4 +278,69 @@ fn ac8_failure_continues_to_next() {
     assert_eq!(alpha_v.status, "skipped");
     assert_eq!(beta_v.status, "dry_run");
     assert_eq!(beta_v.files_untracked, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Push PRD AC2: --no-dry-run --push in a no-upstream repo → push_verdict="skipped-no-upstream"
+// ---------------------------------------------------------------------------
+
+#[test]
+fn push_ac2_no_upstream_skips_push() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    init_repo(dir);
+    commit_file(dir, "target/x.o", "binary");
+
+    // No upstream configured — fresh repo with no remote
+    let verdict = repair(dir, /*dry_run=*/false, /*push=*/true).expect("repair should not error");
+    assert!(verdict.committed, "should have committed");
+    assert_eq!(
+        verdict.push_verdict.as_deref(),
+        Some("skipped-no-upstream"),
+        "no upstream → skipped-no-upstream, got: {:?}", verdict.push_verdict
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Push PRD AC4: dry-run + --push → push_verdict="skipped-dry-run", no commit
+// ---------------------------------------------------------------------------
+
+#[test]
+fn push_ac4_dry_run_with_push_flag() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    init_repo(dir);
+    commit_file(dir, "target/x.o", "binary");
+
+    let verdict = repair(dir, /*dry_run=*/true, /*push=*/true).expect("repair should not error");
+    assert!(!verdict.committed, "no commit in dry-run");
+    assert_eq!(verdict.status, "dry_run");
+    assert_eq!(
+        verdict.push_verdict.as_deref(),
+        Some("skipped-dry-run"),
+        "dry-run + push → skipped-dry-run, got: {:?}", verdict.push_verdict
+    );
+    // File still tracked
+    assert!(is_tracked(dir, "target/x.o"), "file must remain tracked after dry-run");
+}
+
+// ---------------------------------------------------------------------------
+// Push PRD AC5: --no-dry-run without --push → push_verdict is None (no push)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn push_ac5_no_push_flag_backward_compat() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    init_repo(dir);
+    commit_file(dir, "target/x.o", "binary");
+
+    let verdict = repair(dir, /*dry_run=*/false, /*push=*/false).expect("repair should not error");
+    assert!(verdict.committed, "should have committed");
+    assert_eq!(verdict.status, "applied");
+    assert!(
+        verdict.push_verdict.is_none(),
+        "push_verdict must be None when --push not passed, got: {:?}", verdict.push_verdict
+    );
+    assert!(!is_tracked(dir, "target/x.o"), "file must be untracked after apply");
 }

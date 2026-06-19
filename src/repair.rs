@@ -22,6 +22,74 @@ pub struct RepairVerdict {
     pub status: String,
     /// Human-readable reason for skipped/failed.
     pub reason: Option<String>,
+    /// Push result when --push was requested:
+    /// "pushed", "skipped-no-upstream", "skipped-diverged", "skipped-dry-run",
+    /// "push-failed:<stderr>", or None if --push was not requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push_verdict: Option<String>,
+}
+
+/// Check if repo has an upstream tracking branch. Returns the upstream ref name or None.
+fn upstream_branch(repo: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .current_dir(repo)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        }
+        _ => None,
+    }
+}
+
+/// Attempt to push HEAD to origin after a successful repair commit.
+/// Returns push_verdict string: "pushed", "skipped-no-upstream", "skipped-diverged",
+/// or "push-failed:<stderr>".
+fn do_push(repo: &Path) -> String {
+    // Check upstream
+    let upstream = match upstream_branch(repo) {
+        Some(u) => u,
+        None => return "skipped-no-upstream".to_string(),
+    };
+
+    // Check diverged: count behind/ahead
+    let rev_out = Command::new("git")
+        .args(["rev-list", "--left-right", "--count", &format!("{}...HEAD", upstream)])
+        .current_dir(repo)
+        .output();
+
+    if let Ok(o) = rev_out {
+        if o.status.success() {
+            let s = String::from_utf8_lossy(&o.stdout);
+            let parts: Vec<&str> = s.trim().split_whitespace().collect();
+            if parts.len() == 2 {
+                let behind: usize = parts[0].parse().unwrap_or(0);
+                let ahead: usize = parts[1].parse().unwrap_or(0);
+                if behind > 0 && ahead > 0 {
+                    return "skipped-diverged".to_string();
+                }
+            }
+        }
+    }
+
+    // Push
+    let push_out = Command::new("git")
+        .args(["push", "origin", "HEAD"])
+        .current_dir(repo)
+        .output();
+
+    match push_out {
+        Ok(o) if o.status.success() => "pushed".to_string(),
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            // Truncate long error messages
+            let truncated: String = stderr.chars().take(200).collect();
+            format!("push-failed:{}", truncated)
+        }
+        Err(e) => format!("push-failed:{}", e),
+    }
 }
 
 /// Check if repo HEAD is detached.
@@ -143,7 +211,8 @@ fn missing_ignore_patterns(repo: &Path, junk: &[String]) -> Vec<String> {
 ///
 /// `dry_run = true`: report only, no filesystem or git mutations.
 /// `dry_run = false`: run git rm --cached, update .gitignore, commit.
-pub fn repair(repo_path: &Path, dry_run: bool) -> anyhow::Result<RepairVerdict> {
+/// `push = true`: after a successful commit, push to origin (only when dry_run=false).
+pub fn repair(repo_path: &Path, dry_run: bool, push: bool) -> anyhow::Result<RepairVerdict> {
     let repo_name = repo_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -161,6 +230,7 @@ pub fn repair(repo_path: &Path, dry_run: bool) -> anyhow::Result<RepairVerdict> 
             commit_sha: None,
             status: "skipped".to_string(),
             reason: Some("detached HEAD".to_string()),
+            push_verdict: None,
         });
     }
 
@@ -175,6 +245,7 @@ pub fn repair(repo_path: &Path, dry_run: bool) -> anyhow::Result<RepairVerdict> 
             commit_sha: None,
             status: "skipped".to_string(),
             reason: Some("diverged (ahead and behind upstream)".to_string()),
+            push_verdict: None,
         });
     }
 
@@ -190,6 +261,7 @@ pub fn repair(repo_path: &Path, dry_run: bool) -> anyhow::Result<RepairVerdict> 
             commit_sha: None,
             status: "skipped".to_string(),
             reason: Some("no tracked junk files".to_string()),
+            push_verdict: None,
         });
     }
 
@@ -219,6 +291,7 @@ pub fn repair(repo_path: &Path, dry_run: bool) -> anyhow::Result<RepairVerdict> 
                 "would run: git rm --cached {} files; commit \"chaff: stop tracking build artifacts ({} files)\"",
                 files_count, files_count
             )),
+            push_verdict: if push { Some("skipped-dry-run".to_string()) } else { None },
         });
     }
 
@@ -276,6 +349,7 @@ pub fn repair(repo_path: &Path, dry_run: bool) -> anyhow::Result<RepairVerdict> 
             commit_sha: None,
             status: "failed".to_string(),
             reason: Some(format!("git rm --cached failed: {}", stderr.trim())),
+            push_verdict: None,
         });
     }
 
@@ -296,6 +370,7 @@ pub fn repair(repo_path: &Path, dry_run: bool) -> anyhow::Result<RepairVerdict> 
             commit_sha: None,
             status: "failed".to_string(),
             reason: Some(format!("git add .gitignore failed: {}", stderr.trim())),
+            push_verdict: None,
         });
     }
 
@@ -329,6 +404,7 @@ pub fn repair(repo_path: &Path, dry_run: bool) -> anyhow::Result<RepairVerdict> 
             commit_sha: None,
             status: "failed".to_string(),
             reason: Some(format!("git commit failed: {}", stderr.trim())),
+            push_verdict: None,
         });
     }
 
@@ -341,6 +417,13 @@ pub fn repair(repo_path: &Path, dry_run: bool) -> anyhow::Result<RepairVerdict> 
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
 
+    // Step 6: push if requested
+    let push_verdict = if push {
+        Some(do_push(repo_path))
+    } else {
+        None
+    };
+
     Ok(RepairVerdict {
         repo: repo_name,
         path: repo_path.to_path_buf(),
@@ -350,6 +433,7 @@ pub fn repair(repo_path: &Path, dry_run: bool) -> anyhow::Result<RepairVerdict> 
         commit_sha,
         status: "applied".to_string(),
         reason: None,
+        push_verdict,
     })
 }
 
@@ -358,10 +442,12 @@ pub fn repair(repo_path: &Path, dry_run: bool) -> anyhow::Result<RepairVerdict> 
 /// Returns one verdict per repo (including skipped ones).
 /// If `repo_filter` is Some, only repair that named repo.
 /// If a git error occurs on one repo, records `status: failed` and continues.
+/// `push = true`: after each successful commit, push to origin (only when dry_run=false).
 pub fn repair_all(
     root: &Path,
     dry_run: bool,
     repo_filter: Option<&str>,
+    push: bool,
 ) -> Vec<RepairVerdict> {
     let read_dir = match std::fs::read_dir(root) {
         Ok(rd) => rd,
@@ -392,7 +478,7 @@ pub fn repair_all(
             }
         }
 
-        match repair(&entry, dry_run) {
+        match repair(&entry, dry_run, push) {
             Ok(v) => verdicts.push(v),
             Err(e) => verdicts.push(RepairVerdict {
                 repo: name,
@@ -403,6 +489,7 @@ pub fn repair_all(
                 commit_sha: None,
                 status: "failed".to_string(),
                 reason: Some(e.to_string()),
+                push_verdict: None,
             }),
         }
     }

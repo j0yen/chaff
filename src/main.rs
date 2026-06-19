@@ -53,6 +53,10 @@ enum Commands {
         #[arg(long)]
         no_dry_run: bool,
 
+        /// After committing, push to origin (skipped in dry-run, no-upstream, or diverged repos).
+        #[arg(long)]
+        push: bool,
+
         /// Restrict to a single named repo.
         #[arg(long)]
         repo: Option<String>,
@@ -139,10 +143,10 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Repair { root, no_dry_run, repo, format } => {
+        Commands::Repair { root, no_dry_run, push, repo, format } => {
             let root = root.unwrap_or_else(default_root);
             let dry_run = !no_dry_run;
-            let verdicts = repair_all(&root, dry_run, repo.as_deref());
+            let verdicts = repair_all(&root, dry_run, repo.as_deref(), push);
 
             let mut any_failed = false;
             match format {
@@ -180,18 +184,28 @@ fn main() {
                             _ => "?    ",
                         };
                         let detail = if let Some(r) = &v.reason {
-                            format!(" — {}", r)
+                            let push_suffix = v.push_verdict.as_ref()
+                                .map(|pv| format!(", push={}", pv))
+                                .unwrap_or_default();
+                            format!(" — {}{}", r, push_suffix)
                         } else if v.committed {
+                            let push_suffix = v.push_verdict.as_ref()
+                                .map(|pv| format!(", push={}", pv))
+                                .unwrap_or_default();
                             format!(
-                                " — {} files, gitignore={}, sha={}",
+                                " — {} files, gitignore={}, sha={}{}",
                                 v.files_untracked,
                                 v.gitignore_action,
-                                v.commit_sha.as_deref().unwrap_or("?")
+                                v.commit_sha.as_deref().unwrap_or("?"),
+                                push_suffix
                             )
                         } else {
+                            let push_suffix = v.push_verdict.as_ref()
+                                .map(|pv| format!(", push={}", pv))
+                                .unwrap_or_default();
                             format!(
-                                " — {} files, gitignore={}",
-                                v.files_untracked, v.gitignore_action
+                                " — {} files, gitignore={}{}",
+                                v.files_untracked, v.gitignore_action, push_suffix
                             )
                         };
                         if writeln!(out, "{} {}{}", label, v.repo, detail).is_err() {

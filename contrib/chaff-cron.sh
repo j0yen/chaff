@@ -51,25 +51,27 @@ fi
 # --- Repair ---
 REPAIR_EXIT=0
 REPAIRED=0
+PUSHED=0
 ERRORS=0
 
 if [[ -f "$AUTO_REPAIR_SENTINEL" ]]; then
-    chaff repair --no-dry-run --format json >"$REPAIR_FILE" 2>&1 || REPAIR_EXIT=$?
+    chaff repair --no-dry-run --push --format json >"$REPAIR_FILE" 2>&1 || REPAIR_EXIT=$?
 else
     chaff repair --format json >"$REPAIR_FILE" 2>&1 || REPAIR_EXIT=$?
 fi
 
 if command -v jq &>/dev/null && [[ -s "$REPAIR_FILE" ]]; then
     if jq -e . "$REPAIR_FILE" &>/dev/null; then
-        REPAIRED=$(jq '[.[] | select(.verdict == "repaired")] | length' "$REPAIR_FILE" 2>/dev/null || echo 0)
-        ERRORS=$(jq '[.[] | select(.verdict == "error")] | length' "$REPAIR_FILE" 2>/dev/null || echo 0)
+        REPAIRED=$(jq '[.[] | select(.status == "applied")] | length' "$REPAIR_FILE" 2>/dev/null || echo 0)
+        ERRORS=$(jq '[.[] | select(.status == "failed")] | length' "$REPAIR_FILE" 2>/dev/null || echo 0)
+        PUSHED=$(jq '[.[] | select(.push_verdict == "pushed")] | length' "$REPAIR_FILE" 2>/dev/null || echo 0)
     fi
 fi
 
 # --- Emit agorabus event (fail-open) ---
 if command -v agorabus &>/dev/null; then
     agorabus publish chaff.report \
-      "{\"repos\":${REPOS},\"files\":${FILES},\"bytes\":${BYTES},\"repaired\":${REPAIRED},\"errors\":${ERRORS}}" \
+      "{\"repos\":${REPOS},\"files\":${FILES},\"bytes\":${BYTES},\"repaired\":${REPAIRED},\"pushed\":${PUSHED},\"errors\":${ERRORS}}" \
       2>/dev/null || true
 fi
 
@@ -78,7 +80,7 @@ if [[ "$REPAIRED" -gt 0 || "$ERRORS" -gt 0 || "$REPAIR_EXIT" -ne 0 ]]; then
     DRY=""
     [[ ! -f "$AUTO_REPAIR_SENTINEL" ]] && DRY=" (dry-run)"
     MIB=$(( BYTES / 1048576 ))
-    log_journal "survey: ${REPOS} repos, ${FILES} files, ${MIB} MiB; repair${DRY}: ${REPAIRED} fixed, ${ERRORS} errors"
+    log_journal "survey: ${REPOS} repos, ${FILES} files, ${MIB} MiB; repair${DRY}: repaired=${REPAIRED} pushed=${PUSHED} errors=${ERRORS}"
 fi
 
 exit 0
